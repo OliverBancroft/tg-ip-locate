@@ -10,265 +10,216 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from queue import Queue
 from threading import Lock
+import os
+import logging
+
+# 创建data目录（如果不存在）
+os.makedirs('data', exist_ok=True)
+
+# 配置日志
+log_filename = os.path.join('data', f'scan_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(log_filename),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 def download_cidr_list(url):
+    """下载CIDR列表"""
     try:
         response = requests.get(url)
         response.raise_for_status()
-        return response.text.splitlines()
-    except requests.RequestException as e:
-        print(f"Error downloading CIDR list: {e}")
-        sys.exit(1)
+        return response.text
+    except Exception as e:
+        logger.error(f"下载CIDR列表失败: {str(e)}")
+        raise
 
-def extract_ipv4_cidrs(lines):
-    ipv4_cidrs = []
-    for line in lines:
+def extract_ipv4_cidrs(text):
+    """提取IPv4 CIDR"""
+    cidrs = []
+    for line in text.splitlines():
         line = line.strip()
-        if not line or ':' in line:  # Skip empty lines and IPv6 addresses
-            continue
-        try:
-            network = ipaddress.ip_network(line)
-            if network.version == 4:  # Only keep IPv4 addresses
-                ipv4_cidrs.append(network)
-        except ValueError as e:
-            print(f"Warning: Invalid CIDR format '{line}': {e}")
-    return ipv4_cidrs
+        if line and not line.startswith('#'):
+            try:
+                network = ipaddress.ip_network(line)
+                if network.version == 4:
+                    cidrs.append(str(network))
+            except ValueError:
+                continue
+    return cidrs
+
+def split_cidr_to_24(cidr):
+    """将CIDR分割成/24子网"""
+    try:
+        network = ipaddress.ip_network(cidr)
+        if network.prefixlen >= 24:
+            return [str(network)]
+        return [str(subnet) for subnet in network.subnets(new_prefix=24)]
+    except Exception as e:
+        logger.error(f"分割CIDR {cidr} 失败: {str(e)}")
+        return []
 
 def get_ping_latency(ip):
+    """使用ping测试延迟"""
     try:
-        # Run ping with -c 3 (3 packets), -W 1 (1 second timeout)
-        cmd = ['ping', '-c', '3', '-W', '1', ip]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        
-        if result.returncode != 0:
-            return None
-            
-        # Parse ping output to get min latency
-        lines = result.stdout.split('\n')
-        for line in lines:
-            if 'min/avg/max' in line:
-                try:
-                    # Extract min latency from output like "min/avg/max = 1.234/2.345/3.456"
-                    min_latency = float(line.split('=')[1].split('/')[0].strip())
-                    return min_latency
-                except (IndexError, ValueError):
-                    return None
-        return None
+        result = subprocess.run(['ping', '-c', '3', '-W', '1', ip], 
+                              capture_output=True, text=True)
+        if result.returncode == 0:
+            # 提取平均延迟
+            for line in result.stdout.splitlines():
+                if 'avg' in line:
+                    try:
+                        avg = float(line.split('/')[-3])
+                        return avg
+                    except (IndexError, ValueError):
+                        continue
     except Exception as e:
-        print(f"Error running ping for {ip}: {e}")
-        return None
+        logger.error(f"Ping测试 {ip} 失败: {str(e)}")
+    return None
 
 def get_mtr_latency(ip):
+    """使用mtr测试延迟"""
     try:
-        # Run mtr with -n (no DNS), -c 3 (3 cycles), --json output
-        cmd = ['mtr', '-n', '-c', '3', '--json', ip]
-        print(f"Running mtr command: {' '.join(cmd)}")
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        
-        if result.returncode != 0:
-            print(f"mtr command failed for {ip} with return code {result.returncode}")
-            print(f"Error output: {result.stderr}")
-            return None
-            
-        # Parse JSON output
-        try:
-            print(f"mtr raw output for {ip}: {result.stdout[:200]}...")  # Print first 200 chars
-            mtr_data = json.loads(result.stdout)
-            if not mtr_data or 'report' not in mtr_data:
-                print(f"No report data in mtr output for {ip}")
-                return None
-                
-            # Get the last two hops' latencies
-            hubs = mtr_data['report']['hubs']
-            if not hubs:
-                print(f"No hops found in mtr output for {ip}")
-                return None
-                
-            print(f"Found {len(hubs)} hops for {ip}")
-            
-            # Get latencies from the last two hops
-            latencies = []
-            for hub in reversed(hubs):
-                # Skip hops with 100% loss
-                if hub.get('Loss%', 0) >= 100:
-                    print(f"Skipping hop {hub.get('host', 'unknown')} due to 100% loss")
-                    continue
+        result = subprocess.run(['mtr', '--json', '-c', '3', ip], 
+                              capture_output=True, text=True)
+        if result.returncode == 0:
+            try:
+                data = json.loads(result.stdout)
+                if 'report' in data and 'hubs' in data['report']:
+                    # 获取所有跳的延迟
+                    latencies = []
+                    for hub in data['report']['hubs']:
+                        # 跳过丢包率100%的跳
+                        if hub.get('Loss%', 0) >= 100:
+                            continue
+                        # 检查是否有有效的延迟数据
+                        if 'Avg' in hub and isinstance(hub['Avg'], (int, float)) and hub['Avg'] > 0:
+                            latencies.append(hub['Avg'])
                     
-                # Check if the hub has valid latency data
-                if 'Avg' in hub and isinstance(hub['Avg'], (int, float)) and hub['Avg'] > 0:
-                    latencies.append(hub['Avg'])
-                    print(f"Found latency {hub['Avg']}ms for hop {hub.get('host', 'unknown')}")
-                elif 'Avg' in hub:
-                    print(f"Invalid latency value for hop {hub.get('host', 'unknown')}: {hub['Avg']}")
-                if len(latencies) >= 2:
-                    break
-            
-            # If we found any valid latencies, use the first one
-            if latencies:
-                selected_latency = latencies[0]
-                print(f"Selected latency {selected_latency}ms for {ip}")
-                return selected_latency
-                    
-            print(f"No valid latency found for {ip}")
-            # Print the full hub data for debugging
-            print("Hub data:")
-            for hub in hubs:
-                print(f"  Host: {hub.get('host', 'unknown')}, Loss%: {hub.get('Loss%', 'N/A')}, Avg: {hub.get('Avg', 'N/A')}")
-            return None
-        except json.JSONDecodeError as e:
-            print(f"Error parsing mtr JSON output for {ip}: {e}")
-            print(f"Raw output: {result.stdout}")
-            return None
-            
+                    # 如果有有效的延迟数据，返回最后一个有效延迟
+                    if latencies:
+                        logger.info(f"MTR测试 {ip} 成功，找到 {len(latencies)} 个有效延迟")
+                        return latencies[-1]
+                    else:
+                        logger.warning(f"MTR测试 {ip} 未找到有效延迟")
+            except (json.JSONDecodeError, KeyError, IndexError) as e:
+                logger.error(f"解析mtr结果失败: {str(e)}")
     except Exception as e:
-        print(f"Error running mtr for {ip}: {e}")
-        return None
+        logger.error(f"MTR测试 {ip} 失败: {str(e)}")
+    return None
 
 def scan_subnet(subnet):
+    """扫描子网并测试延迟"""
     try:
-        # First try nmap ping scan
-        nm = nmap.PortScanner()
-        result = nm.scan(hosts=subnet, arguments='-sn -T5 --min-parallelism 100 --max-retries 1 --host-timeout 2s')
+        # 从子网中提取一个IP进行测试
+        network = ipaddress.ip_network(subnet)
+        test_ip = str(network.network_address + 1)
         
-        ping_result = None
-        # Check if any hosts are up
-        for host in nm.all_hosts():
-            if nm[host].state() == 'up':
-                # Found a reachable IP, now test its latency with ping
-                latency = get_ping_latency(host)
-                if latency is not None:
-                    ping_result = {
-                        "ip": host,
-                        "latency": latency,
-                        "method": "ping",
-                        "timestamp": datetime.now().isoformat()
-                    }
-                    print(f"Found ping result for {subnet}: {host} with latency {latency}ms")
-                    break
+        # 首先尝试ping扫描
+        nmap_cmd = ['nmap', '-sn', '-PE', '-n', subnet]
+        result = subprocess.run(nmap_cmd, capture_output=True, text=True)
         
-        # If ping scan failed or no latency found, try mtr on .55 IP
-        if ping_result is None:
-            print(f"No ping result found for {subnet}, trying mtr...")
-            network = ipaddress.ip_network(subnet)
-            test_ip = str(network.network_address + 55)
-            latency = get_mtr_latency(test_ip)
-            
-            if latency is not None:
-                mtr_result = {
-                    "ip": test_ip,
-                    "latency": latency,
-                    "method": "mtr",
-                    "timestamp": datetime.now().isoformat()
+        if result.returncode == 0 and 'Host is up' in result.stdout:
+            # 找到可达IP，测试延迟
+            ping_result = get_ping_latency(test_ip)
+            if ping_result is not None:
+                logger.info(f"子网 {subnet} 可达 (ping): {test_ip}, 延迟: {ping_result:.2f}ms")
+                return {
+                    'subnet': subnet,
+                    'reachable': True,
+                    'latency': ping_result,
+                    'method': 'ping',
+                    'test_ip': test_ip
                 }
-                print(f"Found mtr result for {subnet}: {test_ip} with latency {latency}ms")
-                return mtr_result
-            else:
-                print(f"No mtr result found for {subnet}")
         
-        return ping_result
-            
+        # 如果ping失败，尝试mtr
+        mtr_result = get_mtr_latency(test_ip)
+        if mtr_result is not None:
+            logger.info(f"子网 {subnet} 可达 (mtr): {test_ip}, 延迟: {mtr_result:.2f}ms")
+            return {
+                'subnet': subnet,
+                'reachable': True,
+                'latency': mtr_result,
+                'method': 'mtr',
+                'test_ip': test_ip
+            }
+        
+        logger.warning(f"子网 {subnet} 不可达")
+        return {
+            'subnet': subnet,
+            'reachable': False,
+            'latency': None,
+            'method': None,
+            'test_ip': test_ip
+        }
     except Exception as e:
-        print(f"Error scanning subnet {subnet}: {e}")
-        return None
-
-def split_to_24(ipv4_cidrs):
-    all_subnets = []
-    for network in ipv4_cidrs:
-        original_cidr = str(network)
-        if network.prefixlen <= 24:
-            # Split into /24 subnets
-            for subnet in network.subnets(new_prefix=24):
-                all_subnets.append({
-                    "original_cidr": original_cidr,
-                    "subnet": str(subnet)
-                })
-        else:
-            # If already smaller than /24, keep as is
-            all_subnets.append({
-                "original_cidr": original_cidr,
-                "subnet": original_cidr
-            })
-    return all_subnets
-
-def scan_all_subnets(subnets):
-    print("Starting subnet scanning...")
-    results = {}
-    print_lock = Lock()
-    
-    def process_result(future):
-        try:
-            result = future.result()
-            if result:
-                with print_lock:
-                    print(f"[{result['timestamp']}] Found {result['method']} result for subnet {future.subnet}:")
-                    print(f"  IP: {result['ip']}")
-                    print(f"  Latency: {result['latency']:.2f}ms")
-                    print(f"  Method: {result['method']}")
-                
-                if future.original_cidr not in results:
-                    results[future.original_cidr] = {
-                        "original_cidr": future.original_cidr,
-                        "subnets": [],
-                        "reachable_ips": []
-                    }
-                
-                # Add subnet information
-                subnet_info = {
-                    "subnet": future.subnet,
-                    "reachable": result is not None
-                }
-                if subnet_info not in results[future.original_cidr]["subnets"]:
-                    results[future.original_cidr]["subnets"].append(subnet_info)
-                
-                # Add reachable IP information
-                if result:
-                    results[future.original_cidr]["reachable_ips"].append({
-                        "subnet": future.subnet,
-                        "reachable_ip": result["ip"],
-                        "latency": result["latency"],
-                        "method": result["method"],
-                        "timestamp": result["timestamp"]
-                    })
-        except Exception as e:
-            print(f"Error processing result for subnet {future.subnet}: {e}")
-
-    # Increase max_workers for more parallel scanning
-    with ThreadPoolExecutor(max_workers=100) as executor:
-        futures = []
-        for subnet_info in subnets:
-            future = executor.submit(scan_subnet, subnet_info["subnet"])
-            future.subnet = subnet_info["subnet"]
-            future.original_cidr = subnet_info["original_cidr"]
-            future.add_done_callback(process_result)
-            futures.append(future)
-        
-        # Wait for all futures to complete
-        for future in futures:
-            future.result()
-    
-    return list(results.values())
+        logger.error(f"扫描子网 {subnet} 时发生错误: {str(e)}")
+        return {
+            'subnet': subnet,
+            'reachable': False,
+            'latency': None,
+            'method': None,
+            'test_ip': None
+        }
 
 def main():
+    """主函数"""
+    start_time = time.time()
+    logger.info("开始执行IP扫描任务")
+    
+    # 下载CIDR列表
     url = "https://core.telegram.org/resources/cidr.txt"
-    output_file = "telegram_ipv4_24.json"
+    logger.info(f"正在从 {url} 下载CIDR列表")
+    cidr_text = download_cidr_list(url)
     
-    print("Downloading CIDR list...")
-    cidr_lines = download_cidr_list(url)
+    # 提取IPv4 CIDR
+    logger.info("正在提取IPv4 CIDR")
+    ipv4_cidrs = extract_ipv4_cidrs(cidr_text)
+    logger.info(f"找到 {len(ipv4_cidrs)} 个IPv4 CIDR")
     
-    print("Extracting IPv4 addresses...")
-    ipv4_cidrs = extract_ipv4_cidrs(cidr_lines)
+    # 分割成/24子网
+    logger.info("正在分割CIDR为/24子网")
+    subnets = []
+    for cidr in ipv4_cidrs:
+        subnets.extend(split_cidr_to_24(cidr))
+    logger.info(f"分割得到 {len(subnets)} 个/24子网")
     
-    print("Splitting into /24 subnets...")
-    subnets = split_to_24(ipv4_cidrs)
+    # 并行扫描子网
+    logger.info("开始扫描子网")
+    results = []
+    with ThreadPoolExecutor(max_workers=100) as executor:
+        future_to_subnet = {executor.submit(scan_subnet, subnet): subnet for subnet in subnets}
+        for future in as_completed(future_to_subnet):
+            subnet = future_to_subnet[future]
+            try:
+                result = future.result()
+                results.append(result)
+            except Exception as e:
+                logger.error(f"处理子网 {subnet} 时发生错误: {str(e)}")
     
-    print("Scanning subnets for reachable IPs...")
-    result = scan_all_subnets(subnets)
+    # 整理结果
+    output = {
+        'original_cidrs': ipv4_cidrs,
+        'subnets': results,
+        'scan_time': time.time() - start_time,
+        'total_subnets': len(subnets),
+        'reachable_subnets': len([r for r in results if r['reachable']]),
+        'scan_timestamp': datetime.now().isoformat()
+    }
     
-    print(f"Writing results to {output_file}...")
+    # 保存结果到JSON文件
+    output_file = os.path.join('data', 'telegram_ipv4_24.json')
     with open(output_file, 'w') as f:
-        json.dump(result, f, indent=2)
+        json.dump(output, f, indent=2)
     
-    print("Done!")
+    logger.info(f"扫描完成，结果已保存到 {output_file}")
+    logger.info(f"总扫描时间: {time.time() - start_time:.2f} 秒")
+    logger.info(f"总子网数: {len(subnets)}")
+    logger.info(f"可达子网数: {len([r for r in results if r['reachable']])}")
 
 if __name__ == "__main__":
     main() 

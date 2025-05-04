@@ -10,3 +10,5 @@ wheels/
 .venv
 
 telegram_ipv4_24.json
+
+data/

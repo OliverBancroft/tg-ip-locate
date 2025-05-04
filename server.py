@@ -36,8 +36,8 @@ def load_latency_data():
     """Load latency data from JSON file"""
     global latency_data, last_update_time
     try:
-        if os.path.exists('telegram_ipv4_24.json'):
-            with open('telegram_ipv4_24.json', 'r') as f:
+        if os.path.exists('data/telegram_ipv4_24.json'):
+            with open('data/telegram_ipv4_24.json', 'r') as f:
                 latency_data = json.load(f)
             last_update_time = datetime.now()
             print(f"Latency data loaded at {last_update_time}")
@@ -45,8 +45,8 @@ def load_latency_data():
             print("telegram_ipv4_24.json not found, running split_cidr.py")
             if run_split_cidr():
                 # Try loading again after running split_cidr.py
-                if os.path.exists('telegram_ipv4_24.json'):
-                    with open('telegram_ipv4_24.json', 'r') as f:
+                if os.path.exists('data/telegram_ipv4_24.json'):
+                    with open('data/telegram_ipv4_24.json', 'r') as f:
                         latency_data = json.load(f)
                     last_update_time = datetime.now()
                     print(f"Latency data loaded at {last_update_time}")
@@ -70,15 +70,15 @@ def monitor_latency_file():
                     load_latency_data()
             
             # Check for file changes
-            if os.path.exists('telegram_ipv4_24.json'):
-                current_mtime = os.path.getmtime('telegram_ipv4_24.json')
+            if os.path.exists('data/telegram_ipv4_24.json'):
+                current_mtime = os.path.getmtime('data/telegram_ipv4_24.json')
                 if last_update_time is None or current_mtime > last_update_time.timestamp():
                     load_latency_data()
             
-            time.sleep(5)  # Check every 5 seconds
+            time.sleep(3600)  # Check every 5 seconds
         except Exception as e:
             print(f"Error in monitor thread: {e}")
-            time.sleep(5)
+            time.sleep(3600)
 
 @app.route('/health')
 def health_check():
