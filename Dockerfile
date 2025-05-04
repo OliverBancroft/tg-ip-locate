@@ -19,6 +19,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application files
 COPY . .
 
+# Make start script executable
+RUN chmod +x start.sh
+
 # Create a non-root user
 RUN useradd -m appuser && chown -R appuser:appuser /app
 USER appuser
@@ -37,12 +40,4 @@ ENV GUNICORN_THREADS=1
 ENV GUNICORN_TIMEOUT=120
 
 # Run the application
-CMD gunicorn --bind 0.0.0.0:8080 \
-    --workers ${GUNICORN_WORKERS} \
-    --threads ${GUNICORN_THREADS} \
-    --timeout ${GUNICORN_TIMEOUT} \
-    --worker-class=sync \
-    --access-logfile - \
-    --error-logfile - \
-    --log-level info \
-    server:app 
+CMD ["./start.sh"] 
