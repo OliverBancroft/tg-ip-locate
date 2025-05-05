@@ -20,19 +20,23 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application files
 COPY . .
 
-# Create a non-root user with explicit UID/GID
-RUN groupadd -g 1000 appgroup && \
-    useradd -u 1000 -g appgroup -m appuser && \
-    mkdir -p /app/data && \
-    chown -R appuser:appgroup /app && \
-    chmod -R 755 /app && \
-    chmod 777 /app/data
-
 # Make start script executable
 RUN chmod +x start.sh
 
-# Switch to non-root user
-USER appuser
+# Create a modified start script that handles permissions
+RUN mv start.sh original_start.sh && \
+    echo '#!/bin/bash' > start.sh && \
+    echo 'set -e' >> start.sh && \
+    echo 'mkdir -p /app/data' >> start.sh && \
+    echo 'chmod -R 777 /app/data' >> start.sh && \
+    echo 'exec ./original_start.sh' >> start.sh && \
+    chmod +x start.sh
+
+# Create data directory
+RUN mkdir -p /app/data && chmod 777 /app/data
+
+# Do NOT switch to a non-root user in the Dockerfile
+# This will allow the container to fix permissions at runtime
 
 # Expose port
 EXPOSE 8080
