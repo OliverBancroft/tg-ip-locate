@@ -116,7 +116,7 @@ def scan_subnet(subnet):
     """扫描子网并测试延迟"""
     try:
         # 使用nmap扫描整个网段
-        nmap_cmd = ['nmap', '-sn', '-PE', '-n', '--min-parallelism', '10', '--max-parallelism', '50', subnet]
+        nmap_cmd = ['nmap', '-sn', subnet]
         result = subprocess.run(nmap_cmd, capture_output=True, text=True)
         
         if result.returncode != 0:
@@ -132,7 +132,7 @@ def scan_subnet(subnet):
         # 提取所有可达的IP
         reachable_ips = []
         for line in result.stdout.splitlines():
-            if 'Host is up' in line:
+            if 'Nmap scan report for' in line:
                 # 从输出中提取IP地址
                 ip_match = re.search(r'(\d+\.\d+\.\d+\.\d+)', line)
                 if ip_match:
