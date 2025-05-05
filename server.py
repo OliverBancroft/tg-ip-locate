@@ -2,8 +2,6 @@ from flask import Flask, jsonify
 import json
 import os
 from datetime import datetime
-import threading
-import time
 import subprocess
 import sys
 
@@ -35,43 +33,34 @@ def load_latency_data():
     """Load latency data from JSON file"""
     global latency_data, last_update_time
     try:
-        if os.path.exists('data/telegram_ipv4_24.json'):
+        # Check if file exists and is not empty
+        if os.path.exists('data/telegram_ipv4_24.json') and os.path.getsize('data/telegram_ipv4_24.json') > 0:
             with open('data/telegram_ipv4_24.json', 'r') as f:
                 latency_data = json.load(f)
             last_update_time = datetime.now()
             print(f"Latency data loaded at {last_update_time}")
         else:
-            print("telegram_ipv4_24.json not found, running split_cidr.py")
+            print("telegram_ipv4_24.json not found or empty, running split_cidr.py")
             if run_split_cidr():
                 # Try loading again after running split_cidr.py
-                if os.path.exists('data/telegram_ipv4_24.json'):
+                if os.path.exists('data/telegram_ipv4_24.json') and os.path.getsize('data/telegram_ipv4_24.json') > 0:
                     with open('data/telegram_ipv4_24.json', 'r') as f:
                         latency_data = json.load(f)
                     last_update_time = datetime.now()
                     print(f"Latency data loaded at {last_update_time}")
+                else:
+                    print("Failed to generate valid latency data file")
+                    latency_data = None
     except Exception as e:
         print(f"Error loading latency data: {e}")
         latency_data = None
 
-def monitor_latency_file():
-    """Monitor the latency file for changes"""
-    while True:
-        try:
-            # Check for file changes
-            if os.path.exists('data/telegram_ipv4_24.json'):
-                current_mtime = os.path.getmtime('data/telegram_ipv4_24.json')
-                if last_update_time is None or current_mtime > last_update_time.timestamp():
-                    load_latency_data()
-            
-            time.sleep(60)  # Check every minute
-        except Exception as e:
-            print(f"Error in monitor thread: {e}")
-            time.sleep(60)
-
 @app.route('/health')
 def health_check():
     """Health check endpoint"""
-    global last_update_time
+    # Load latest data for health check
+    load_latency_data()
+    
     if last_update_time is None:
         return jsonify({
             "status": "error",
@@ -98,7 +87,9 @@ def health_check():
 @app.route('/latency')
 def get_latency():
     """Latency data endpoint"""
-    global latency_data, last_update_time
+    # Load latest data for each request
+    load_latency_data()
+    
     if latency_data is None:
         return jsonify({
             "status": "error",
@@ -115,13 +106,6 @@ def get_latency():
     })
 
 def main():
-    # Load initial data
-    load_latency_data()
-    
-    # Start file monitoring in a separate thread
-    monitor_thread = threading.Thread(target=monitor_latency_file, daemon=True)
-    monitor_thread.start()
-    
     # Start the Flask server
     app.run(host='0.0.0.0', port=8080)
 
