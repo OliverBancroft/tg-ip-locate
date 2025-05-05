@@ -4,3 +4,4 @@ flask
 gunicorn
 schedule
 pytz
+python-nmap

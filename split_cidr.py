@@ -12,6 +12,7 @@ from queue import Queue
 from threading import Lock
 import os
 import logging
+import random
 
 # 创建data目录（如果不存在）
 os.makedirs('data', exist_ok=True)
@@ -115,31 +116,30 @@ def get_mtr_latency(ip):
 def scan_subnet(subnet):
     """扫描子网并测试延迟"""
     try:
-        # 使用nmap扫描整个网段
-        nmap_cmd = ['nmap', '-sn', subnet]
-        result = subprocess.run(nmap_cmd, capture_output=True, text=True)
-        
-        if result.returncode != 0:
-            logger.warning(f"子网 {subnet} nmap扫描失败")
-            return {
-                'subnet': subnet,
-                'reachable': False,
-                'latency': None,
-                'method': None,
-                'test_ip': None
-            }
+        # 使用python-nmap扫描整个网段
+        nm = nmap.PortScanner()
+        nm.scan(hosts=subnet, arguments='-sn')
         
         # 提取所有可达的IP
         reachable_ips = []
-        for line in result.stdout.splitlines():
-            if 'Nmap scan report for' in line:
-                # 从输出中提取IP地址
-                ip_match = re.search(r'(\d+\.\d+\.\d+\.\d+)', line)
-                if ip_match:
-                    reachable_ips.append(ip_match.group(1))
+        for host in nm.all_hosts():
+            if nm[host].state() == 'up':
+                reachable_ips.append(host)
         
         if not reachable_ips:
-            logger.warning(f"子网 {subnet} 没有发现可达IP")
+            logger.warning(f"子网 {subnet} 没有发现可达IP，尝试使用mtr")
+            # 如果nmap没有发现可达IP，使用mtr测试
+            test_ip = str(ipaddress.ip_network(subnet).network_address + 1)
+            mtr_result = get_mtr_latency(test_ip)
+            if mtr_result is not None:
+                logger.info(f"子网 {subnet} 通过mtr发现可达: {test_ip}, 延迟: {mtr_result:.2f}ms")
+                return {
+                    'subnet': subnet,
+                    'reachable': True,
+                    'latency': mtr_result,
+                    'method': 'mtr',
+                    'test_ip': test_ip
+                }
             return {
                 'subnet': subnet,
                 'reachable': False,
@@ -148,38 +148,50 @@ def scan_subnet(subnet):
                 'test_ip': None
             }
         
-        # 测试所有可达IP的延迟
+        # 随机选择一个可达IP进行ping测试
+        test_ip = random.choice(reachable_ips)
+        logger.info(f"子网 {subnet} 随机选择IP {test_ip} 进行ping测试")
+        
+        # 对选中的IP进行3次ping测试，取最低延迟
         best_latency = float('inf')
-        best_ip = None
-        best_method = None
+        ping_success = False
+        for _ in range(3):
+            ping_result = get_ping_latency(test_ip)
+            if ping_result is not None:
+                ping_success = True
+                if ping_result < best_latency:
+                    best_latency = ping_result
         
-        for ip in reachable_ips:
-            # 尝试ping
-            ping_result = get_ping_latency(ip)
-            if ping_result is not None and ping_result < best_latency:
-                best_latency = ping_result
-                best_ip = ip
-                best_method = 'ping'
-            
-            # 如果ping失败或延迟较高，尝试mtr
-            if ping_result is None or ping_result > 100:
-                mtr_result = get_mtr_latency(ip)
-                if mtr_result is not None and mtr_result < best_latency:
-                    best_latency = mtr_result
-                    best_ip = ip
-                    best_method = 'mtr'
-        
-        if best_ip is not None:
-            logger.info(f"子网 {subnet} 最佳延迟: {best_ip}, {best_method}: {best_latency:.2f}ms")
+        if ping_success:
+            logger.info(f"子网 {subnet} ping测试成功: {test_ip}, 最低延迟: {best_latency:.2f}ms")
             return {
                 'subnet': subnet,
                 'reachable': True,
                 'latency': best_latency,
-                'method': best_method,
-                'test_ip': best_ip
+                'method': 'ping',
+                'test_ip': test_ip
             }
         
-        logger.warning(f"子网 {subnet} 所有IP延迟测试失败")
+        # 如果ping测试失败，再次确认IP是否可达
+        nm.scan(hosts=test_ip, arguments='-sn')
+        if nm[test_ip].state() != 'up':
+            logger.warning(f"子网 {subnet} 选中的IP {test_ip} 已不可达，尝试使用mtr")
+            # 如果IP已不可达，尝试其他可达IP
+            for ip in reachable_ips:
+                if ip != test_ip:
+                    mtr_result = get_mtr_latency(ip)
+                    if mtr_result is not None:
+                        logger.info(f"子网 {subnet} 通过mtr发现可达: {ip}, 延迟: {mtr_result:.2f}ms")
+                        return {
+                            'subnet': subnet,
+                            'reachable': True,
+                            'latency': mtr_result,
+                            'method': 'mtr',
+                            'test_ip': ip
+                        }
+        
+        # 如果所有方法都失败，返回失败
+        logger.warning(f"子网 {subnet} 所有测试方法都失败")
         return {
             'subnet': subnet,
             'reachable': False,
