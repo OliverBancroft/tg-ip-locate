@@ -112,7 +112,7 @@ def get_mtr_latency(ip):
 def scan_subnet(subnet):
     """扫描子网并测试延迟"""
     try:
-        # 使用python-nmap扫描整个网段，使用锁确保同一时间只有一个线程在使用nmap
+        # 使用python-nmap扫描整个网段
         nm = nmap.PortScanner()
         nm.scan(hosts=subnet, arguments='-sn')
         
@@ -121,7 +121,7 @@ def scan_subnet(subnet):
         for host in nm.all_hosts():
             if nm[host].state() == 'up':
                 reachable_ips.append(host)
-    
+        
         if not reachable_ips:
             logger.warning(f"子网 {subnet} 没有发现可达IP，尝试使用mtr")
             # 如果nmap没有发现可达IP，使用mtr测试
@@ -144,9 +144,9 @@ def scan_subnet(subnet):
                 'test_ip': None
             }
         
-        # 随机选择一个可达IP进行ping测试
-        test_ip = str(ipaddress.ip_network(subnet).network_address + 1)
-        logger.info(f"子网 {subnet} 随机选择IP {test_ip} 进行ping测试")
+        # 使用第一个可达IP进行ping测试
+        test_ip = reachable_ips[0]
+        logger.info(f"子网 {subnet} 选择可达IP {test_ip} 进行ping测试")
         
         # 对选中的IP进行3次ping测试，取最低延迟
         best_latency = float('inf')
@@ -181,18 +181,17 @@ def scan_subnet(subnet):
         
         # 如果mtr也失败（这种情况不应该发生），尝试其他可达IP
         logger.warning(f"子网 {subnet} 选中的IP {test_ip} mtr测试失败，尝试其他IP")
-        for ip in reachable_ips:
-            if ip != test_ip:
-                mtr_result = get_mtr_latency(ip)
-                if mtr_result is not None:
-                    logger.info(f"子网 {subnet} 通过mtr发现可达: {ip}, 延迟: {mtr_result:.2f}ms")
-                    return {
-                        'subnet': subnet,
-                        'reachable': True,
-                        'latency': mtr_result,
-                        'method': 'mtr',
-                        'test_ip': ip
-                    }
+        for ip in reachable_ips[1:]:  # 跳过已经测试过的IP
+            mtr_result = get_mtr_latency(ip)
+            if mtr_result is not None:
+                logger.info(f"子网 {subnet} 通过mtr发现可达: {ip}, 延迟: {mtr_result:.2f}ms")
+                return {
+                    'subnet': subnet,
+                    'reachable': True,
+                    'latency': mtr_result,
+                    'method': 'mtr',
+                    'test_ip': ip
+                }
         
         # 如果所有方法都失败（这种情况不应该发生），返回失败
         logger.error(f"子网 {subnet} 所有测试方法都失败，这不应该发生")
