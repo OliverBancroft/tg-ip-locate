@@ -23,21 +23,6 @@ COPY . .
 # Make start script executable
 RUN chmod +x start.sh
 
-# Create a modified start script that handles permissions
-RUN mv start.sh original_start.sh && \
-    echo '#!/bin/bash' > start.sh && \
-    echo 'set -e' >> start.sh && \
-    echo 'mkdir -p /app/data' >> start.sh && \
-    echo 'chmod -R 777 /app/data' >> start.sh && \
-    echo 'exec ./original_start.sh' >> start.sh && \
-    chmod +x start.sh
-
-# Create data directory
-RUN mkdir -p /app/data && chmod 777 /app/data
-
-# Do NOT switch to a non-root user in the Dockerfile
-# This will allow the container to fix permissions at runtime
-
 # Expose port
 EXPOSE 8080
 
