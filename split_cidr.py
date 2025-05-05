@@ -6,13 +6,9 @@ import nmap
 import time
 import subprocess
 import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
-from queue import Queue
-from threading import Lock
 import os
 import logging
-import random
 
 # 创建data目录（如果不存在）
 os.makedirs('data', exist_ok=True)
@@ -116,7 +112,7 @@ def get_mtr_latency(ip):
 def scan_subnet(subnet):
     """扫描子网并测试延迟"""
     try:
-        # 使用python-nmap扫描整个网段
+        # 使用python-nmap扫描整个网段，使用锁确保同一时间只有一个线程在使用nmap
         nm = nmap.PortScanner()
         nm.scan(hosts=subnet, arguments='-sn')
         
@@ -125,7 +121,7 @@ def scan_subnet(subnet):
         for host in nm.all_hosts():
             if nm[host].state() == 'up':
                 reachable_ips.append(host)
-        
+    
         if not reachable_ips:
             logger.warning(f"子网 {subnet} 没有发现可达IP，尝试使用mtr")
             # 如果nmap没有发现可达IP，使用mtr测试
@@ -149,20 +145,18 @@ def scan_subnet(subnet):
             }
         
         # 随机选择一个可达IP进行ping测试
-        test_ip = random.choice(reachable_ips)
+        test_ip = str(ipaddress.ip_network(subnet).network_address + 1)
         logger.info(f"子网 {subnet} 随机选择IP {test_ip} 进行ping测试")
         
         # 对选中的IP进行3次ping测试，取最低延迟
         best_latency = float('inf')
-        ping_success = False
         for _ in range(3):
             ping_result = get_ping_latency(test_ip)
-            if ping_result is not None:
-                ping_success = True
-                if ping_result < best_latency:
-                    best_latency = ping_result
+            if ping_result is not None and ping_result < best_latency:
+                best_latency = ping_result
         
-        if ping_success:
+        # 如果ping测试成功（有任何一个ping成功），返回结果
+        if best_latency != float('inf'):
             logger.info(f"子网 {subnet} ping测试成功: {test_ip}, 最低延迟: {best_latency:.2f}ms")
             return {
                 'subnet': subnet,
@@ -172,26 +166,36 @@ def scan_subnet(subnet):
                 'test_ip': test_ip
             }
         
-        # 如果ping测试失败，再次确认IP是否可达
-        nm.scan(hosts=test_ip, arguments='-sn')
-        if nm[test_ip].state() != 'up':
-            logger.warning(f"子网 {subnet} 选中的IP {test_ip} 已不可达，尝试使用mtr")
-            # 如果IP已不可达，尝试其他可达IP
-            for ip in reachable_ips:
-                if ip != test_ip:
-                    mtr_result = get_mtr_latency(ip)
-                    if mtr_result is not None:
-                        logger.info(f"子网 {subnet} 通过mtr发现可达: {ip}, 延迟: {mtr_result:.2f}ms")
-                        return {
-                            'subnet': subnet,
-                            'reachable': True,
-                            'latency': mtr_result,
-                            'method': 'mtr',
-                            'test_ip': ip
-                        }
+        # 如果ping测试失败，使用mtr
+        logger.info(f"子网 {subnet} ping测试失败，尝试mtr")
+        mtr_result = get_mtr_latency(test_ip)
+        if mtr_result is not None:
+            logger.info(f"子网 {subnet} mtr测试成功: {test_ip}, 延迟: {mtr_result:.2f}ms")
+            return {
+                'subnet': subnet,
+                'reachable': True,
+                'latency': mtr_result,
+                'method': 'mtr',
+                'test_ip': test_ip
+            }
         
-        # 如果所有方法都失败，返回失败
-        logger.warning(f"子网 {subnet} 所有测试方法都失败")
+        # 如果mtr也失败（这种情况不应该发生），尝试其他可达IP
+        logger.warning(f"子网 {subnet} 选中的IP {test_ip} mtr测试失败，尝试其他IP")
+        for ip in reachable_ips:
+            if ip != test_ip:
+                mtr_result = get_mtr_latency(ip)
+                if mtr_result is not None:
+                    logger.info(f"子网 {subnet} 通过mtr发现可达: {ip}, 延迟: {mtr_result:.2f}ms")
+                    return {
+                        'subnet': subnet,
+                        'reachable': True,
+                        'latency': mtr_result,
+                        'method': 'mtr',
+                        'test_ip': ip
+                    }
+        
+        # 如果所有方法都失败（这种情况不应该发生），返回失败
+        logger.error(f"子网 {subnet} 所有测试方法都失败，这不应该发生")
         return {
             'subnet': subnet,
             'reachable': False,
@@ -231,20 +235,15 @@ def main():
         subnets.extend(split_cidr_to_24(cidr))
     logger.info(f"分割得到 {len(subnets)} 个/24子网")
     
-    # 并行扫描子网
+    # 顺序扫描子网
     logger.info("开始扫描子网")
     results = []
-    # 使用10个线程并行扫描，每个线程负责一个子网
-    # 考虑到每个子网扫描都会使用nmap、ping和mtr，所以不要设置太多线程
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        future_to_subnet = {executor.submit(scan_subnet, subnet): subnet for subnet in subnets}
-        for future in as_completed(future_to_subnet):
-            subnet = future_to_subnet[future]
-            try:
-                result = future.result()
-                results.append(result)
-            except Exception as e:
-                logger.error(f"处理子网 {subnet} 时发生错误: {str(e)}")
+    for subnet in subnets:
+        try:
+            result = scan_subnet(subnet)
+            results.append(result)
+        except Exception as e:
+            logger.error(f"处理子网 {subnet} 时发生错误: {str(e)}")
     
     # 整理结果
     output = {
