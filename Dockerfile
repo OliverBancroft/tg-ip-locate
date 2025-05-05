@@ -19,14 +19,21 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application files
 COPY . .
 
+# Create a non-root user
+RUN useradd -m appuser && \
+    mkdir -p /app/data && \
+    chown -R appuser:appuser /app
+
 # Make start script executable
 RUN chmod +x start.sh
+
+# Switch to non-root user
+USER appuser
 
 # Expose port
 EXPOSE 8080
 
 # Set environment variables
-ENV SCAN_INTERVAL=3600
 ENV LOCATION=SG
 ENV PYTHONUNBUFFERED=1
 ENV FLASK_ENV=production

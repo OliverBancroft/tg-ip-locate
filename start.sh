@@ -1,13 +1,5 @@
 #!/bin/bash
 
-# 检查数据目录是否存在并设置权限
-if [ ! -d "/app/data" ]; then
-    mkdir -p /app/data
-fi
-
-# 确保数据目录有正确的权限
-chmod 755 /app/data
-
 # 检查JSON文件是否存在，不存在则运行扫描
 if [ ! -f "/app/data/telegram_ipv4_24.json" ]; then
     echo "Initial scan file not found, running first scan..."

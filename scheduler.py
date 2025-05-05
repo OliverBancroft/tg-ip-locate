@@ -4,6 +4,7 @@ import subprocess
 import os
 import logging
 from datetime import datetime
+import pytz
 
 # 配置日志
 log_filename = os.path.join('data', f'scheduler_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log')
@@ -43,12 +44,12 @@ def run_scan():
 def run_scheduler():
     """运行调度器"""
     try:
-        # 获取扫描间隔（默认3600秒）
-        scan_interval = int(os.getenv('SCAN_INTERVAL', 3600))
-        logger.info(f"调度器启动，扫描间隔设置为 {scan_interval} 秒")
+        # 设置时区为 UTC+8
+        tz = pytz.timezone('Asia/Shanghai')
+        schedule.every().thursday.at("22:00", tz).do(run_scan)
         
-        # 设置定时任务
-        schedule.every(scan_interval).seconds.do(run_scan)
+        logger.info(f"调度器启动，设置为每周四 22:00 (UTC+8/Asia/Shanghai) 执行扫描")
+        logger.info(f"当前时区时间: {datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S %Z')}")
         
         # 运行调度器
         while True:

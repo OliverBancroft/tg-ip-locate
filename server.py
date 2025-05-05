@@ -12,7 +12,6 @@ app = Flask(__name__)
 # Global variable to store the last update time
 last_update_time = None
 latency_data = None
-scan_interval = int(os.getenv('SCAN_INTERVAL', '3600'))  # Default to 1 hour
 location = os.getenv('LOCATION', 'SG')
 
 def run_split_cidr():
@@ -55,30 +54,19 @@ def load_latency_data():
         latency_data = None
 
 def monitor_latency_file():
-    """Monitor the latency file for changes and run periodic scans"""
-    last_scan_time = datetime.now()
-    
+    """Monitor the latency file for changes"""
     while True:
         try:
-            current_time = datetime.now()
-            
-            # Check if it's time for a periodic scan
-            if (current_time - last_scan_time).total_seconds() >= scan_interval:
-                print(f"Running periodic scan at {current_time}")
-                if run_split_cidr():
-                    last_scan_time = current_time
-                    load_latency_data()
-            
             # Check for file changes
             if os.path.exists('data/telegram_ipv4_24.json'):
                 current_mtime = os.path.getmtime('data/telegram_ipv4_24.json')
                 if last_update_time is None or current_mtime > last_update_time.timestamp():
                     load_latency_data()
             
-            time.sleep(3600)  # Check every 5 seconds
+            time.sleep(60)  # Check every minute
         except Exception as e:
             print(f"Error in monitor thread: {e}")
-            time.sleep(3600)
+            time.sleep(60)
 
 @app.route('/health')
 def health_check():
@@ -91,8 +79,8 @@ def health_check():
             "timestamp": datetime.now().isoformat()
         }), 503
     
-    # Check if data is stale (older than 5 minutes)
-    if (datetime.now() - last_update_time).total_seconds() > 300:
+    # Check if data is stale (older than 24 hours)
+    if (datetime.now() - last_update_time).total_seconds() > 86400:
         return jsonify({
             "status": "warning",
             "message": "Latency data is stale",
