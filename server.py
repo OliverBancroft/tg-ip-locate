@@ -68,15 +68,6 @@ def health_check():
             "timestamp": datetime.now().isoformat()
         }), 503
     
-    # Check if data is stale (older than 24 hours)
-    if (datetime.now() - last_update_time).total_seconds() > 86400:
-        return jsonify({
-            "status": "warning",
-            "message": "Latency data is stale",
-            "last_update": last_update_time.isoformat(),
-            "timestamp": datetime.now().isoformat()
-        }), 200
-    
     return jsonify({
         "status": "ok",
         "message": "Service is healthy",
