@@ -191,7 +191,7 @@ def main():
     # 并行扫描子网
     logger.info("开始扫描子网")
     results = []
-    with ThreadPoolExecutor(max_workers=100) as executor:
+    with ThreadPoolExecutor(max_workers=2) as executor:
         future_to_subnet = {executor.submit(scan_subnet, subnet): subnet for subnet in subnets}
         for future in as_completed(future_to_subnet):
             subnet = future_to_subnet[future]

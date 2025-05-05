@@ -7,10 +7,7 @@ services:
     restart: unless-stopped
     user: "1000:1000"  # Explicitly set user to match the UID:GID in Dockerfile
     volumes:
-      # Add a driver_opts section to set permissions on the volume
-      - type: volume
-        source: tg_ip_data
-        target: /app/data
+      - ./data:/app/data
     ports:
       - "127.0.0.1:8080:8080"
     environment:
@@ -21,7 +18,3 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
-
-volumes:
-  tg_ip_data:
-    name: tg_ip_data
