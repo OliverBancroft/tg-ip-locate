@@ -5,6 +5,7 @@ RUN apt-get update && apt-get install -y \
     nmap \
     mtr \
     curl \
+    iputils-ping \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
