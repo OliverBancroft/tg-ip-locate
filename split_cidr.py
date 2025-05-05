@@ -114,7 +114,7 @@ def scan_subnet(subnet):
     try:
         # 使用python-nmap扫描整个网段
         nm = nmap.PortScanner()
-        nm.scan(hosts=subnet, arguments='-sn')
+        nm.scan(hosts=subnet, arguments='-sn -T5 --min-parallelism 100 --max-rtt-timeout 300ms')
         
         # 提取所有可达的IP
         reachable_ips = []
