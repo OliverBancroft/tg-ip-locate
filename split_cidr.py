@@ -115,46 +115,77 @@ def get_mtr_latency(ip):
 def scan_subnet(subnet):
     """扫描子网并测试延迟"""
     try:
-        # 从子网中提取一个IP进行测试
-        network = ipaddress.ip_network(subnet)
-        test_ip = str(network.network_address + 1)
-        
-        # 首先尝试ping扫描
-        nmap_cmd = ['nmap', '-sn', '-PE', '-n', subnet]
+        # 使用nmap扫描整个网段
+        nmap_cmd = ['nmap', '-sn', '-PE', '-n', '--min-parallelism', '10', '--max-parallelism', '50', subnet]
         result = subprocess.run(nmap_cmd, capture_output=True, text=True)
         
-        if result.returncode == 0 and 'Host is up' in result.stdout:
-            # 找到可达IP，测试延迟
-            ping_result = get_ping_latency(test_ip)
-            if ping_result is not None:
-                logger.info(f"子网 {subnet} 可达 (ping): {test_ip}, 延迟: {ping_result:.2f}ms")
-                return {
-                    'subnet': subnet,
-                    'reachable': True,
-                    'latency': ping_result,
-                    'method': 'ping',
-                    'test_ip': test_ip
-                }
+        if result.returncode != 0:
+            logger.warning(f"子网 {subnet} nmap扫描失败")
+            return {
+                'subnet': subnet,
+                'reachable': False,
+                'latency': None,
+                'method': None,
+                'test_ip': None
+            }
         
-        # 如果ping失败，尝试mtr
-        mtr_result = get_mtr_latency(test_ip)
-        if mtr_result is not None:
-            logger.info(f"子网 {subnet} 可达 (mtr): {test_ip}, 延迟: {mtr_result:.2f}ms")
+        # 提取所有可达的IP
+        reachable_ips = []
+        for line in result.stdout.splitlines():
+            if 'Host is up' in line:
+                # 从输出中提取IP地址
+                ip_match = re.search(r'(\d+\.\d+\.\d+\.\d+)', line)
+                if ip_match:
+                    reachable_ips.append(ip_match.group(1))
+        
+        if not reachable_ips:
+            logger.warning(f"子网 {subnet} 没有发现可达IP")
+            return {
+                'subnet': subnet,
+                'reachable': False,
+                'latency': None,
+                'method': None,
+                'test_ip': None
+            }
+        
+        # 测试所有可达IP的延迟
+        best_latency = float('inf')
+        best_ip = None
+        best_method = None
+        
+        for ip in reachable_ips:
+            # 尝试ping
+            ping_result = get_ping_latency(ip)
+            if ping_result is not None and ping_result < best_latency:
+                best_latency = ping_result
+                best_ip = ip
+                best_method = 'ping'
+            
+            # 如果ping失败或延迟较高，尝试mtr
+            if ping_result is None or ping_result > 100:
+                mtr_result = get_mtr_latency(ip)
+                if mtr_result is not None and mtr_result < best_latency:
+                    best_latency = mtr_result
+                    best_ip = ip
+                    best_method = 'mtr'
+        
+        if best_ip is not None:
+            logger.info(f"子网 {subnet} 最佳延迟: {best_ip}, {best_method}: {best_latency:.2f}ms")
             return {
                 'subnet': subnet,
                 'reachable': True,
-                'latency': mtr_result,
-                'method': 'mtr',
-                'test_ip': test_ip
+                'latency': best_latency,
+                'method': best_method,
+                'test_ip': best_ip
             }
         
-        logger.warning(f"子网 {subnet} 不可达")
+        logger.warning(f"子网 {subnet} 所有IP延迟测试失败")
         return {
             'subnet': subnet,
             'reachable': False,
             'latency': None,
             'method': None,
-            'test_ip': test_ip
+            'test_ip': None
         }
     except Exception as e:
         logger.error(f"扫描子网 {subnet} 时发生错误: {str(e)}")
@@ -191,7 +222,9 @@ def main():
     # 并行扫描子网
     logger.info("开始扫描子网")
     results = []
-    with ThreadPoolExecutor(max_workers=2) as executor:
+    # 使用10个线程并行扫描，每个线程负责一个子网
+    # 考虑到每个子网扫描都会使用nmap、ping和mtr，所以不要设置太多线程
+    with ThreadPoolExecutor(max_workers=10) as executor:
         future_to_subnet = {executor.submit(scan_subnet, subnet): subnet for subnet in subnets}
         for future in as_completed(future_to_subnet):
             subnet = future_to_subnet[future]
