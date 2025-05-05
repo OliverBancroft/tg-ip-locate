@@ -20,12 +20,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application files
 COPY . .
 
-# Create a non-root user and set up permissions
-RUN useradd -m appuser && \
+# Create a non-root user with explicit UID/GID
+RUN groupadd -g 1000 appgroup && \
+    useradd -u 1000 -g appgroup -m appuser && \
     mkdir -p /app/data && \
-    chown -R appuser:appuser /app && \
+    chown -R appuser:appgroup /app && \
     chmod -R 755 /app && \
-    chmod -R 777 /app/data
+    chmod 777 /app/data
 
 # Make start script executable
 RUN chmod +x start.sh
@@ -46,4 +47,4 @@ ENV GUNICORN_THREADS=1
 ENV GUNICORN_TIMEOUT=120
 
 # Run the application
-CMD ["./start.sh"] 
+CMD ["./start.sh"]

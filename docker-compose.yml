@@ -5,8 +5,12 @@ services:
     image: ghcr.io/oliverbancroft/tg-ip-locate:latest
     container_name: tg-ip-locator
     restart: unless-stopped
+    user: "1000:1000"  # Explicitly set user to match the UID:GID in Dockerfile
     volumes:
-      - tg_ip_data:/app/data
+      # Add a driver_opts section to set permissions on the volume
+      - type: volume
+        source: tg_ip_data
+        target: /app/data
     ports:
       - "127.0.0.1:8080:8080"
     environment:
@@ -20,4 +24,4 @@ services:
 
 volumes:
   tg_ip_data:
-    name: tg_ip_data 
+    name: tg_ip_data
