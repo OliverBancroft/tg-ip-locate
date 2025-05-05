@@ -20,10 +20,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application files
 COPY . .
 
-# Create a non-root user
+# Create a non-root user and set up permissions
 RUN useradd -m appuser && \
     mkdir -p /app/data && \
-    chown -R appuser:appuser /app
+    chown -R appuser:appuser /app && \
+    chmod -R 755 /app && \
+    chmod -R 777 /app/data
 
 # Make start script executable
 RUN chmod +x start.sh
